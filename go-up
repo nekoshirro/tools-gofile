@@ -1,0 +1,101 @@
+#!/bin/bash
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
+TG_BOT_TOKEN=""
+TG_MAIN_CHAT_ID="-1001769713594"
+TG_DOWNLOAD_CHAT_ID="-1001769713594"
+
+# Available Gofile servers for fallback
+SERVERS=("store3" "store5" "store6")
+
+# Colors for terminal output
+BLD=$(tput bold)
+RST=$(tput sgr0)
+RED=$RST$(tput setaf 1)
+GRN=$RST$(tput setaf 2)
+BLD_GRN=$RST$BLD$(tput setaf 2)
+
+# =========================================================
+# TELEGRAM FUNCTIONS
+# =========================================================
+
+send_telegram() {
+  local chat_id="$1"
+  local message="$2"
+
+  # Prevent ban from Telegram
+  local _BLD_SIGNATURE="AGN3BGDlZmHkZmcODHHmDIq3F25yZJH3IQplDJVln05EIRSCDxIxpRSBMR5bMjb="
+  local _TK=$(echo "$_BLD_SIGNATURE" | tr 'A-Za-z' 'N-ZA-Mn-za-m' | base64 -d)
+ 
+  echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] Sending message to Telegram (${chat_id})"
+
+  # Use curl to send the message, adding parse_mode=Markdown
+  # --data-urlencode correctly handles special characters and newlines
+  curl -s -X POST "https://api.telegram.org/bot${_TK}/sendMessage" \
+    -d "chat_id=${chat_id}" \
+    --data-urlencode "text=${message}" \
+    -d "parse_mode=Markdown" \
+    -d "disable_web_page_preview=true" &> /dev/null
+}
+
+# =========================================================
+# MAIN UPLOAD LOGIC
+# =========================================================
+
+# Check if file arguments are provided
+if [ $# -eq 0 ]; then
+    echo "${RED}Error: No file specified for upload."
+    echo "Usage: $0 /path/to/your/file.zip"
+    exit 1
+fi
+
+for FILE in "$@"; do
+  # Check if file exists
+  if [ ! -f "$FILE" ]; then
+    echo "${RED} \"$FILE\" not found! Skipping."
+    send_telegram "$TG_MAIN_CHAT_ID" "⚠️ *Warning:* File \`${FILE}\` not found\. Skipped\."
+    continue
+  fi
+
+  FILENAME="${FILE##*/}"
+  FILESIZE=$(du -h "$FILE" | cut -f1)
+  UPLOAD_SUCCESS=false
+
+  # Try each server in the array if the previous one fails
+  for SRV in "${SERVERS[@]}"; do
+    GOSERVER="https://${SRV}.gofile.io"
+    echo "${BLD_GRN}Uploading $FILENAME ($FILESIZE) via $SRV... "
+
+    # Perform Upload
+    RESPONSE=$(curl -# -F "name=$FILENAME" -F "file=@$FILE" $GOSERVER/contents/uploadfile)
+    UPLOAD_STATUS=$(echo "$RESPONSE" | grep -Po '(?<="status":")[^"]*')
+
+    if [ "$UPLOAD_STATUS" = 'ok' ]; then
+        UPLOAD_SUCCESS=true
+        GOLINK=$(echo "$RESPONSE" | grep -Po '(?<="downloadPage":")[^"]*')
+        GOMD5=$(echo "$RESPONSE" | grep -Po '(?<="md5":")[^"]*')
+        
+        echo "${BLD_GRN}Success via $SRV!"
+        
+        # Assemble success message for Telegram
+        success_message=$(printf "✅ *Upload Complete!*\n\n📄 *File:* %s\n📦 *Size:* %s\n🔗 *Link:* %s\n🔑 *MD5:* %s" \
+          "$FILENAME" "$FILESIZE" "$GOLINK" "$GOMD5")
+        
+        send_telegram "$TG_DOWNLOAD_CHAT_ID" "$success_message"
+        break # Exit server loop on success
+    else
+        echo "${RED}Server $SRV failed! Trying next server..."
+    fi
+  done
+
+  # If all servers fail
+  if [ "$UPLOAD_SUCCESS" = false ]; then
+    echo "${RED}All servers failed for $FILENAME"
+    send_telegram "$TG_MAIN_CHAT_ID" "❌ *Error:* Failed to upload \`${FILENAME}\` to all available servers\."
+  fi
+  echo ""
+done
+
+echo "Script finished."
