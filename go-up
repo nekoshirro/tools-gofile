@@ -2,16 +2,11 @@
 
 # =========================================================
 # CONFIGURATION
-# Set your Telegram bot token and chat IDs here.
 # =========================================================
+
 TG_BOT_TOKEN="..." # Your telegram bot token, replace ... with token.
 TG_MAIN_CHAT_ID="..."      # Chat ID, it can be same with TG_DOWNLOAD_CHAT_ID. Replace with ID.
 TG_DOWNLOAD_CHAT_ID="..." # Same with above.
-
-# =========================================================
-# SCRIPT DEFAULTS
-# =========================================================
-GOSERVER="https://store1.gofile.io"
 
 # Colors for terminal output
 BLD=$(tput bold)
@@ -19,23 +14,24 @@ RST=$(tput sgr0)
 RED=$RST$(tput setaf 1)
 GRN=$RST$(tput setaf 2)
 BLD_GRN=$RST$BLD$(tput setaf 2)
+CYN=$RST$(tput setaf 6)
 
 # =========================================================
 # TELEGRAM FUNCTIONS
 # =========================================================
 
-# Function to send a text message to Telegram
 send_telegram() {
   local chat_id="$1"
   local message="$2"
-  
-  echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] Sending message to Telegram (${chat_id})"
-  # Use curl to send the message, adding parse_mode=Markdown
-  # --data-urlencode correctly handles special characters and newlines
-  curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+
+  local _TK="$TG_BOT_TOKEN"
+
+  echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] Sending message to Telegram..."
+
+  curl -s -X POST "https://api.telegram.org/bot${_TK}/sendMessage" \
     -d "chat_id=${chat_id}" \
     --data-urlencode "text=${message}" \
-    -d "parse_mode=Markdown" \
+    -d "parse_mode=HTML" \
     -d "disable_web_page_preview=true" &> /dev/null
 }
 
@@ -43,55 +39,56 @@ send_telegram() {
 # MAIN UPLOAD LOGIC
 # =========================================================
 
-# Check if at least one file argument is provided
 if [ $# -eq 0 ]; then
     echo "${RED}Error: No file specified for upload."
-    echo "Usage: $0 /path/to/your/file.zip"
+    echo "Usage: $0 /path/to/your/file"
     exit 1
 fi
 
-# Loop through each file provided as an argument
-for FILE in "$@"; do
+# Fetch best gofile server
+echo -e "${CYN}Fetching best server from Gofile...${RST}"
+BEST_SERVER=$(curl -s https://api.gofile.io/servers | grep -oP '(?<="name":")[^"]*' | head -n 1)
 
-  # Check if the file actually exists
+if [ -z "$BEST_SERVER" ]; then
+    echo "${RED}Failed to get active server. Falling back to store3...${RST}"
+    BEST_SERVER="store3"
+fi
+
+for FILE in "$@"; do
   if [ ! -f "$FILE" ]; then
     echo "${RED} \"$FILE\" not found! Skipping."
-    send_telegram "$TG_MAIN_CHAT_ID" "⚠️ Warning: File '$FILE' not found. Skipped."
+    send_telegram "$TG_MAIN_CHAT_ID" "⚠️ <b>Warning:</b> File <code>${FILE}</code> not found."
     continue
   fi
 
   FILENAME="${FILE##*/}"
   FILESIZE=$(du -h "$FILE" | cut -f1)
-
-  # --- 1. Send Start Notification ---
-  echo "${BLD_GRN}Uploading $FILENAME ($FILESIZE)... "
-  # Format the multi-line message for Telegram using Markdown for bolding (*...*)
-  start_message=$(printf "⬆️ *ROM Upload Started!*\n\n*ROM:* %s\n*Size:* %s" \
-    "$FILENAME" "$FILESIZE")
-  send_telegram "$TG_MAIN_CHAT_ID" "$start_message"
   
-  # --- 2. Perform Upload using cURL ---
-  RESPONSE=$(curl -# -F "name=$FILENAME" -F "file=@$FILE" $GOSERVER/contents/uploadfile)
+  echo -e "${BLD_GRN}Uploading $FILENAME ($FILESIZE) via $BEST_SERVER... ${RST}"
+
+  # Perform Upload
+  RESPONSE=$(curl -# -F "file=@$FILE" "https://${BEST_SERVER}.gofile.io/contents/uploadfile")
   
-  # Extract the upload status from the JSON response
-  UPLOAD_STATUS=$(echo "$RESPONSE" | grep -Po '(?<="status":")[^"]*')
+  # Verify Upload Status
+  UPLOAD_STATUS=$(echo "$RESPONSE" | grep -o '"status":"ok"')
 
-  # --- 3. Send Finish Notification ---
-  if [ "$UPLOAD_STATUS" = 'ok' ]; then
-    GOLINK=$(echo $RESPONSE | grep -Po '(?<="downloadPage":")[^"]*')
-    GOMD5=$(echo $RESPONSE | grep -Po '(?<="md5":")[^"]*')
-    
-    echo "${BLD_GRN}Download: ${GRN}$GOLINK"
-    echo "${BLD_GRN}MD5: ${GRN}$GOMD5"
-
-    # This success message remains unchanged as requested
-    success_message=$(printf "✅ *Upload Complete!*\n\n📄 *File:* %s\n📦 *Size:* %s\n🔗 *Link:* %s\n🔑 *MD5:* %s" \
-      "$FILENAME" "$FILESIZE" "$GOLINK" "$GOMD5")
+  if [[ -n "$UPLOAD_STATUS" ]]; then
+      # Extracting Link and MD5
+      GOLINK=$(echo "$RESPONSE" | grep -oP '"downloadPage":"\K[^"]+')
+      GOMD5=$(echo "$RESPONSE" | grep -oP '"md5":"\K[^"]+')
       
-    send_telegram "$TG_DOWNLOAD_CHAT_ID" "$success_message"
+      echo -e "${BLD_GRN}✅ Success!${RST}"
+      echo -e "${BLD}Link: ${CYN}${GOLINK}${RST}"
+
+      # Assemble message using HTML tags for clean formatting
+      # Using <b> for bold, <a> for links, and <code> for monospaced text
+      success_message=$(printf "✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <a href=\"%s\">%s</a>\n📦 <b>Size:</b> %s\n🔗 <b>Link:</b> %s\n🔑 <b>MD5:</b> <code>%s</code>" \
+        "$GOLINK" "$FILENAME" "$FILESIZE" "$GOLINK" "$GOMD5")
+      
+      send_telegram "$TG_DOWNLOAD_CHAT_ID" "$success_message"
   else
-    echo "${RED}Upload failed!"
-    send_telegram "$TG_MAIN_CHAT_ID" "❌ Error: Failed to upload '${FILENAME}'. Please check the terminal for details."
+      echo "${RED}❌ Upload failed! Response: $RESPONSE"
+      send_telegram "$TG_MAIN_CHAT_ID" "❌ <b>Error:</b> Failed to upload <code>${FILENAME}</code>."
   fi
   echo ""
 done
