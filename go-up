@@ -3,9 +3,18 @@
 # =========================================================
 # CONFIGURATION
 # =========================================================
-TG_BOT_TOKEN=""
-TG_MAIN_CHAT_ID="-1001769713594"
-TG_DOWNLOAD_CHAT_ID="-1001769713594"
+
+if [ -f "$HOME/.secrets" ]; then
+    source "$HOME/.secrets"
+else
+    echo "File .secrets not found in $HOME"
+fi
+
+if [ -f "$(pwd)/.secrets" ]; then
+    source "$(pwd)/.secrets"
+else
+    echo "File .secrets not found in $(pwd)"
+fi
 
 # Colors for terminal output
 BLD=$(tput bold)
@@ -23,10 +32,8 @@ send_telegram() {
   local chat_id="$1"
   local message="$2"
 
-  # Prevent ban from Telegram
-  local _BLD_SIGNATURE="AGN3BGDlZmHkZmcODHHmDIq3F25yZJH3IQplDJVln05EIRSCDxIxpRSBMR5bMjb="
-  local _TK=$(echo "$_BLD_SIGNATURE" | tr 'A-Za-z' 'N-ZA-Mn-za-m' | base64 -d)
- 
+  local _TK="$TG_BOT_TOKEN"
+
   echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] Sending message to Telegram..."
 
   curl -s -X POST "https://api.telegram.org/bot${_TK}/sendMessage" \
