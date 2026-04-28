@@ -1,22 +1,20 @@
 #!/bin/bash
 
 # =========================================================
-# CONFIGURATION
+# CONFIGURATION & SECRETS
 # =========================================================
+
+# Load credentials from .secrets file in home or current directory
 
 if [ -f "$HOME/.secrets" ]; then
     source "$HOME/.secrets"
-else
-    echo "File .secrets not found in $HOME"
 fi
 
 if [ -f "$(pwd)/.secrets" ]; then
     source "$(pwd)/.secrets"
-else
-    echo "File .secrets not found in $(pwd)"
 fi
 
-# Colors for terminal output
+# Terminal colors for better readability
 BLD=$(tput bold)
 RST=$(tput sgr0)
 RED=$RST$(tput setaf 1)
@@ -25,16 +23,15 @@ BLD_GRN=$RST$BLD$(tput setaf 2)
 CYN=$RST$(tput setaf 6)
 
 # =========================================================
-# TELEGRAM FUNCTIONS
+# TELEGRAM NOTIFICATION FUNCTION
 # =========================================================
 
 send_telegram() {
   local chat_id="$1"
   local message="$2"
-
   local _TK="$TG_BOT_TOKEN"
 
-  echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] Sending message to Telegram..."
+  echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] Sending notification to Telegram..."
 
   curl -s -X POST "https://api.telegram.org/bot${_TK}/sendMessage" \
     -d "chat_id=${chat_id}" \
@@ -44,16 +41,17 @@ send_telegram() {
 }
 
 # =========================================================
-# MAIN UPLOAD LOGIC
+# MAIN UPLOAD PROCESS
 # =========================================================
 
+# Check if at least one file is provided
 if [ $# -eq 0 ]; then
     echo "${RED}Error: No file specified for upload."
     echo "Usage: $0 /path/to/your/file"
     exit 1
 fi
 
-# Fetch best gofile server
+# Get the fastest Gofile server
 echo -e "${CYN}Fetching best server from Gofile...${RST}"
 BEST_SERVER=$(curl -s https://api.gofile.io/servers | grep -oP '(?<="name":")[^"]*' | head -n 1)
 
@@ -62,6 +60,7 @@ if [ -z "$BEST_SERVER" ]; then
     BEST_SERVER="store3"
 fi
 
+# Loop through all files provided as arguments
 for FILE in "$@"; do
   if [ ! -f "$FILE" ]; then
     echo "${RED} \"$FILE\" not found! Skipping."
@@ -71,31 +70,32 @@ for FILE in "$@"; do
 
   FILENAME="${FILE##*/}"
   FILESIZE=$(du -h "$FILE" | cut -f1)
+  GOMD5=$(md5sum "$FILE" | cut -d' ' -f1)
   
-  echo -e "${BLD_GRN}Uploading $FILENAME ($FILESIZE) via $BEST_SERVER... ${RST}"
-
-  # Perform Upload
-  RESPONSE=$(curl -# -F "file=@$FILE" "https://${BEST_SERVER}.gofile.io/contents/uploadfile")
+  # --- Gofile Upload Strategy ---
+  echo -e "${BLD_GRN}Uploading $FILENAME ($FILESIZE) to Gofile... ${RST}"
+  RESPONSE_GO=$(curl -# -F "file=@$FILE" "https://${BEST_SERVER}.gofile.io/contents/uploadfile")
+  GOLINK=$(echo "$RESPONSE_GO" | grep -oP '"downloadPage":"\K[^"]+')
   
-  # Verify Upload Status
-  UPLOAD_STATUS=$(echo "$RESPONSE" | grep -o '"status":"ok"')
+  # --- Pixeldrain Upload Strategy ---
+  echo -e "${BLD_GRN}Uploading $FILENAME to Pixeldrain... ${RST}"
+  RESPONSE_PX=$(curl -# -u :"$PIXELDRAIN_TOKEN" -T "$FILE" https://pixeldrain.com/api/file/)
+  PX_ID=$(echo "$RESPONSE_PX" | grep -oP '(?<="id":")[^"]*')
+  PXLINK="https://pixeldrain.com/u/${PX_ID}"
 
-  if [[ -n "$UPLOAD_STATUS" ]]; then
-      # Extracting Link and MD5
-      GOLINK=$(echo "$RESPONSE" | grep -oP '"downloadPage":"\K[^"]+')
-      GOMD5=$(echo "$RESPONSE" | grep -oP '"md5":"\K[^"]+')
-      
+  # Verification and Telegram Summary
+  if [[ -n "$GOLINK" && -n "$PX_ID" ]]; then
       echo -e "${BLD_GRN}✅ Success!${RST}"
-      echo -e "${BLD}Link: ${CYN}${GOLINK}${RST}"
+      echo -e "${BLD}Link 1: ${CYN}${GOLINK}${RST}"
+      echo -e "${BLD}Link 2: ${CYN}${PXLINK}${RST}"
 
-      # Assemble message using HTML tags for clean formatting
-      # Using <b> for bold, <a> for links, and <code> for monospaced text
-      success_message=$(printf "✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <a href=\"%s\">%s</a>\n📦 <b>Size:</b> %s\n🔗 <b>Link:</b> %s\n🔑 <b>MD5:</b> <code>%s</code>" \
-        "$GOLINK" "$FILENAME" "$FILESIZE" "$GOLINK" "$GOMD5")
+      # Construct the Telegram message with raw links
+      success_message=$(printf "✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> %s\n📦 <b>Size:</b> %s\n🔗 <b>Link 1:</b> %s\n🔗 <b>Link 2:</b> %s\n🔑 <b>MD5:</b> <code>%s</code>" \
+        "$FILENAME" "$FILESIZE" "$GOLINK" "$PXLINK" "$GOMD5")
       
       send_telegram "$TG_DOWNLOAD_CHAT_ID" "$success_message"
   else
-      echo "${RED}❌ Upload failed! Response: $RESPONSE"
+      echo "${RED}❌ Upload failed! Check your connection or API tokens."
       send_telegram "$TG_MAIN_CHAT_ID" "❌ <b>Error:</b> Failed to upload <code>${FILENAME}</code>."
   fi
   echo ""
